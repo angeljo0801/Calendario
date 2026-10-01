@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="calendar_primary">#6750A4</color>
+    <color name="calendar_primary_dark">#D0BCFF</color>
+    <color name="launcher_background">#6750A4</color>
+</resources>
