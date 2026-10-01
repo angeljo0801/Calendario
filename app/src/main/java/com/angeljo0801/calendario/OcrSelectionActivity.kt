@@ -10,6 +10,8 @@ import android.os.Bundle
 import android.view.View
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.angeljo0801.calendario.databinding.ActivityOcrSelectionBinding
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -22,11 +24,14 @@ class OcrSelectionActivity : AppCompatActivity() {
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private var bitmap: Bitmap? = null
     private var imagePath: String? = null
+    private var panelCollapsed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityOcrSelectionBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        applyBottomInsets()
 
         imagePath = intent.getStringExtra(EXTRA_IMAGE_PATH)
         val path = imagePath
@@ -50,6 +55,30 @@ class OcrSelectionActivity : AppCompatActivity() {
         runOcr(loaded)
     }
 
+    private fun applyBottomInsets() {
+        val panel = binding.bottomPanel
+        val baseLeft = panel.paddingLeft
+        val baseTop = panel.paddingTop
+        val baseRight = panel.paddingRight
+        val baseBottom = panel.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(panel) { view, insets ->
+            val navigationBars = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            val safeBottom = maxOf(navigationBars.bottom, ime.bottom, cutout.bottom)
+
+            view.setPadding(
+                baseLeft,
+                baseTop,
+                baseRight,
+                baseBottom + safeBottom
+            )
+            insets
+        }
+        ViewCompat.requestApplyInsets(panel)
+    }
+
     private fun setupActions() {
         binding.ocrOverlay.onSelectionChanged = { text ->
             val hasText = text.isNotBlank()
@@ -60,6 +89,10 @@ class OcrSelectionActivity : AppCompatActivity() {
             } else {
                 "Toca una palabra y arrastra hasta el final del texto que quieras."
             }
+        }
+
+        binding.collapsePanelButton.setOnClickListener {
+            setPanelCollapsed(!panelCollapsed)
         }
 
         binding.selectAllButton.setOnClickListener {
@@ -88,6 +121,19 @@ class OcrSelectionActivity : AppCompatActivity() {
         }
 
         binding.closeButton.setOnClickListener { finish() }
+    }
+
+    private fun setPanelCollapsed(collapsed: Boolean) {
+        panelCollapsed = collapsed
+        val detailsVisibility = if (collapsed) View.GONE else View.VISIBLE
+        binding.selectedText.visibility = detailsVisibility
+        binding.actionsScroll.visibility = detailsVisibility
+        binding.collapsePanelButton.text = if (collapsed) "⌃" else "⌄"
+        binding.collapsePanelButton.contentDescription = if (collapsed) {
+            "Expandir panel"
+        } else {
+            "Minimizar panel"
+        }
     }
 
     private fun runOcr(source: Bitmap) {
