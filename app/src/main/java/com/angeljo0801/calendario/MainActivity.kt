@@ -2,12 +2,16 @@ package com.angeljo0801.calendario
 
 import android.Manifest
 import android.app.DatePickerDialog
+import android.app.StatusBarManager
 import android.app.TimePickerDialog
+import android.content.ComponentName
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.drawable.Icon
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
 import android.view.View
@@ -60,8 +64,14 @@ class MainActivity : AppCompatActivity() {
 
         setupStaticSpinners()
         setupActions()
+        setupFloatingCapture()
         applyIncomingText(intent)
         ensureCalendarPermission()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::binding.isInitialized) updateFloatingCaptureUi()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -124,6 +134,63 @@ class MainActivity : AppCompatActivity() {
                 runCatching { startActivity(Intent(Intent.ACTION_VIEW, uri)) }
                     .onFailure { Toast.makeText(this, "No pude abrir ese evento.", Toast.LENGTH_SHORT).show() }
             }
+        }
+    }
+
+    private fun setupFloatingCapture() {
+        binding.floatingModeButton.setOnClickListener {
+            if (FloatingCapturePrefs.isEnabled(this)) {
+                startService(
+                    Intent(this, OverlayCaptureService::class.java)
+                        .setAction(OverlayCaptureService.ACTION_STOP)
+                )
+                FloatingCapturePrefs.setEnabled(this, false)
+                updateFloatingCaptureUi()
+            } else {
+                startActivity(Intent(this, CapturePermissionActivity::class.java))
+            }
+        }
+
+        binding.addTileButton.setOnClickListener { requestQuickSettingsTile() }
+        updateFloatingCaptureUi()
+    }
+
+    private fun updateFloatingCaptureUi() {
+        val enabled = FloatingCapturePrefs.isEnabled(this)
+        binding.floatingModeButton.text = if (enabled) {
+            "Desactivar botón flotante"
+        } else {
+            "Activar botón flotante OCR"
+        }
+        binding.floatingStatusText.text = if (enabled) {
+            "Activo: toca 🗓 sobre cualquier app para capturar la pantalla y seleccionar texto."
+        } else {
+            "Desactivado. Puedes iniciarlo aquí o desde el botón Calendario OCR del panel rápido."
+        }
+    }
+
+    private fun requestQuickSettingsTile() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val statusBarManager = getSystemService(StatusBarManager::class.java)
+            statusBarManager.requestAddTileService(
+                ComponentName(this, CalendarTileService::class.java),
+                "Calendario OCR",
+                Icon.createWithResource(this, R.drawable.ic_qs_calendar),
+                mainExecutor
+            ) { result ->
+                val message = if (result == StatusBarManager.TILE_ADD_REQUEST_RESULT_TILE_ADDED) {
+                    "Calendario OCR agregado al panel rápido."
+                } else {
+                    "Si no aparece, edita el panel rápido y añade Calendario OCR."
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(
+                this,
+                "Edita el panel rápido del teléfono y arrastra Calendario OCR a tus botones.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
