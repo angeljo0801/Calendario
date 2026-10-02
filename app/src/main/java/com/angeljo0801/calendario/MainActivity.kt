@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.CalendarContract
+import android.provider.Settings
 import android.view.View
 import android.widget.ArrayAdapter
 import android.widget.Toast
@@ -44,17 +45,28 @@ class MainActivity : AppCompatActivity() {
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        val granted = result[Manifest.permission.READ_CALENDAR] == true &&
-            result[Manifest.permission.WRITE_CALENDAR] == true
+        val readGranted = result[Manifest.permission.READ_CALENDAR] == true ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CALENDAR) == PackageManager.PERMISSION_GRANTED
+        val writeGranted = result[Manifest.permission.WRITE_CALENDAR] == true ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_CALENDAR) == PackageManager.PERMISSION_GRANTED
+        val granted = readGranted && writeGranted
 
         if (granted) {
             binding.permissionButton.visibility = View.GONE
             loadCalendars()
+            if (DailySummaryPrefs.isEnabled(this)) DailySummaryScheduler.scheduleNext(this)
             setStatus("Permiso concedido. Elige dónde guardar el recordatorio.")
         } else {
             binding.permissionButton.visibility = View.VISIBLE
             setStatus("Necesito permiso de calendario para guardar eventos automáticamente.")
         }
+        updateDailySummaryUi()
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        updateDailySummaryUi()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,13 +77,18 @@ class MainActivity : AppCompatActivity() {
         setupStaticSpinners()
         setupActions()
         setupFloatingCapture()
+        setupDailySummary()
         applyIncomingText(intent)
         ensureCalendarPermission()
     }
 
     override fun onResume() {
         super.onResume()
-        if (::binding.isInitialized) updateFloatingCaptureUi()
+        if (::binding.isInitialized) {
+            updateFloatingCaptureUi()
+            updateDailySummaryUi()
+            if (DailySummaryPrefs.isEnabled(this)) DailySummaryScheduler.scheduleNext(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -166,6 +183,142 @@ class MainActivity : AppCompatActivity() {
             "Activo: toca 🗓 sobre cualquier app para capturar la pantalla y seleccionar texto."
         } else {
             "Desactivado. Puedes iniciarlo aquí o desde el botón Calendario OCR del panel rápido."
+        }
+    }
+
+    private fun setupDailySummary() {
+        binding.dailySummarySwitch.isChecked = DailySummaryPrefs.isEnabled(this)
+        binding.dailyAlarmSwitch.isChecked = DailySummaryPrefs.alarmAfterSummary(this)
+        refreshDailySummaryTimeButton()
+
+        binding.dailySummarySwitch.setOnCheckedChangeListener { _, enabled ->
+            DailySummaryPrefs.setEnabled(this, enabled)
+            if (enabled) {
+                if (!hasCalendarPermission()) requestCalendarPermission()
+                requestNotificationPermissionIfNeeded()
+                DailySummaryScheduler.scheduleNext(this)
+            } else {
+                DailySummaryScheduler.cancel(this)
+            }
+            updateDailySummaryUi()
+        }
+
+        binding.dailyAlarmSwitch.setOnCheckedChangeListener { _, enabled ->
+            DailySummaryPrefs.setAlarmAfterSummary(this, enabled)
+            updateDailySummaryUi()
+        }
+
+        binding.dailySummaryTimeButton.setOnClickListener {
+            TimePickerDialog(
+                this,
+                { _, hour, minute ->
+                    DailySummaryPrefs.setTime(this, hour, minute)
+                    refreshDailySummaryTimeButton()
+                    if (DailySummaryPrefs.isEnabled(this)) DailySummaryScheduler.scheduleNext(this)
+                    updateDailySummaryUi()
+                },
+                DailySummaryPrefs.hour(this),
+                DailySummaryPrefs.minute(this),
+                android.text.format.DateFormat.is24HourFormat(this)
+            ).show()
+        }
+
+        binding.dailySummaryTestButton.setOnClickListener {
+            if (!hasCalendarPermission()) {
+                requestCalendarPermission()
+                Toast.makeText(this, "Concede el permiso de calendario y vuelve a probar.", Toast.LENGTH_LONG).show()
+            } else {
+                requestNotificationPermissionIfNeeded()
+                sendBroadcast(
+                    Intent(this, DailySummaryReceiver::class.java)
+                        .setAction(DailySummaryReceiver.ACTION_TEST)
+                )
+                Toast.makeText(this, "Resumen de prueba ejecutado.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.dailyOverlayPermissionButton.setOnClickListener {
+            runCatching {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            }
+        }
+
+        binding.dailyExactAlarmButton.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                runCatching {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                            Uri.parse("package:$packageName")
+                        )
+                    )
+                }
+            }
+        }
+
+        updateDailySummaryUi()
+    }
+
+    private fun refreshDailySummaryTimeButton() {
+        val time = LocalTime.of(
+            DailySummaryPrefs.hour(this),
+            DailySummaryPrefs.minute(this)
+        )
+        val formatter = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+            .withLocale(Locale.getDefault())
+        binding.dailySummaryTimeButton.text = "Hora: ${time.format(formatter)}"
+    }
+
+    private fun updateDailySummaryUi() {
+        if (!::binding.isInitialized) return
+
+        val enabled = DailySummaryPrefs.isEnabled(this)
+        if (binding.dailySummarySwitch.isChecked != enabled) {
+            binding.dailySummarySwitch.isChecked = enabled
+        }
+        val alarmEnabled = DailySummaryPrefs.alarmAfterSummary(this)
+        if (binding.dailyAlarmSwitch.isChecked != alarmEnabled) {
+            binding.dailyAlarmSwitch.isChecked = alarmEnabled
+        }
+        refreshDailySummaryTimeButton()
+
+        val overlayAllowed = Settings.canDrawOverlays(this)
+        val exactAllowed = DailySummaryScheduler.canScheduleExact(this)
+        val alarmText = if (alarmEnabled) {
+            "alarma +1 min activada"
+        } else {
+            "sin alarma posterior"
+        }
+
+        binding.dailySummaryStatusText.text = if (enabled) {
+            buildString {
+                append("Activo • $alarmText • lee todos los calendarios visibles.")
+                if (!overlayAllowed) append(" El aviso flotante necesita permiso de superposición.")
+                if (!exactAllowed) append(" Android puede retrasar un poco la hora hasta que permitas alarmas exactas.")
+            }
+        } else {
+            "Desactivado. Al activarlo revisará los eventos del día a la hora elegida."
+        }
+
+        binding.dailyOverlayPermissionButton.visibility =
+            if (overlayAllowed) View.GONE else View.VISIBLE
+        binding.dailyExactAlarmButton.visibility =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !exactAllowed) View.VISIBLE else View.GONE
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
